@@ -60,7 +60,13 @@
    */
 
   // Private variables and methods
-  const CORS_PROXY = 'https://corsproxy.io/?';
+  const CORS_PROXY_OPTIONS = [
+    'https://corsproxy.io/?',
+    'https://proxy.cors.sh/',
+    'https://thingproxy.freeboard.io/fetch',
+    'https://allorigins.win/',
+    'https://html-driven.github.io/cors-anywhere/proxy'
+  ][1];
   
   // Main class
   class UdioPlayer {
