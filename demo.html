@@ -281,7 +281,8 @@ The UI provides access to all the features of the UdioPlayer library in an intui
         document.addEventListener('DOMContentLoaded', function() {
             // Initialize Udio Player
             const player = new UdioPlayer({
-                useCorsProxy: true
+                corsMode: 'auto',  // 'auto', 'proxy', or 'direct'
+                maxRetries: 3      // Number of proxy attempts before giving up
             });
             
             // State variables

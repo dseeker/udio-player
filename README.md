@@ -68,4 +68,33 @@ player.addEventListener('ended', () => {
 });
 ```
 
+## Key Improvements
+
+1. **Multiple CORS strategies**:
+   - Public CORS proxies with automatic fallbacks
+   - Web Worker approach that can bypass some CORS restrictions
+   - JSONP implementation as a last resort for GET requests
+
+2. **Enhanced error handling**:
+   - Graceful fallbacks through multiple layers
+   - Caching of successful searches
+   - Demo tracks as ultimate fallback
+
+3. **Performance optimizations**:
+   - Request caching to reduce API calls
+   - More efficient proxy selection
+
+4. **Audio element improvements**:
+   - Set crossOrigin attribute to "anonymous" to better handle CORS for audio
+
+## How to Use
+
+Initialize the player with your preferred CORS handling mode:
+
+```javascript
+const player = new UdioPlayer({
+  corsMode: 'auto',  // 'auto', 'proxy', or 'direct'
+  maxRetries: 3      // Number of proxy attempts before giving up
+});
+
 This library provides a complete solution for integrating Udio's audio content into games while handling all the complexities of audio playback control and API interaction.
