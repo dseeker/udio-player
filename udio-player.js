@@ -60,7 +60,7 @@
    */
 
   // Private variables and methods
-  const CORS_PROXY_OPTIONS = [
+  const CORS_PROXY = [
     'https://corsproxy.io/?',
     'https://proxy.cors.sh/',
     'https://thingproxy.freeboard.io/fetch',
