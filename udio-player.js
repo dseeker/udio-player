@@ -59,28 +59,150 @@
    * @property {string} [lyrics] - Track lyrics
    */
 
-  // Private variables and methods
-  const CORS_PROXY = [
-    'https://corsproxy.io/?',
-    'https://proxy.cors.sh/',
-    'https://thingproxy.freeboard.io/fetch',
-    'https://allorigins.win/',
-    'https://html-driven.github.io/cors-anywhere/proxy'
-  ][1];
-  
-  // Main class
-  class UdioPlayer {
+  // Replace the static CORS_PROXY with a dynamic proxy manager
+  class CorsProxyManager {
+    constructor() {
+      // List of available CORS proxies with their capabilities
+      this.proxies = [
+        { 
+          url: 'https://corsproxy.io/?', 
+          methods: ['GET', 'POST', 'OPTIONS'],
+          format: (url) => `${this.proxies[0].url}${encodeURIComponent(url)}`,
+          status: 'untested'
+        },
+        { 
+          url: 'https://proxy.cors.sh/', 
+          methods: ['GET', 'POST', 'OPTIONS'],
+          format: (url) => `${this.proxies[1].url}${encodeURIComponent(url)}`,
+          status: 'untested'
+        },
+        { 
+          url: 'https://api.allorigins.win/raw?url=', 
+          methods: ['GET'],
+          format: (url) => `${this.proxies[2].url}${encodeURIComponent(url)}`,
+          status: 'untested'
+        },
+        { 
+          url: 'https://thingproxy.freeboard.io/fetch/', 
+          methods: ['GET', 'POST'],
+          format: (url) => `${this.proxies[3].url}${url}`,
+          status: 'untested'
+        },
+        { 
+          url: 'https://cors-anywhere.herokuapp.com/', 
+          methods: ['GET', 'POST', 'OPTIONS'],
+          format: (url) => `${this.proxies[4].url}${url}`,
+          status: 'untested'
+        }
+      ];
+      
+      this.currentProxyIndex = 0;
+      this.lastTestedTime = {};
+      this.retryDelay = 30 * 60 * 1000; // 30 minutes before retrying a failed proxy
+    }
+
     /**
-     * Creates a new UdioPlayer instance
-     * @param {Object} [options] - Configuration options
-     * @param {string} [options.apiEndpoint='https://www.udio.com/api/songs/search'] - Udio API endpoint
-     * @param {boolean} [options.useCorsProxy=true] - Whether to use CORS proxy for requests
-     * @param {number} [options.pageSize=20] - Number of results per page
+     * Get the current best proxy URL
+     * @param {string} method - HTTP method (GET, POST, OPTIONS)
+     * @returns {function} Function that formats the URL with the proxy
      */
+    getCurrentProxy(method) {
+      // Try to find a working proxy that supports the method
+      const workingProxies = this.proxies.filter(p => 
+        p.status === 'working' && 
+        p.methods.includes(method)
+      );
+      
+      // If we have working proxies, use one of them
+      if (workingProxies.length > 0) {
+        return workingProxies[0].format;
+      }
+      
+      // Otherwise use the current proxy if it supports the method
+      if (this.proxies[this.currentProxyIndex].methods.includes(method)) {
+        return this.proxies[this.currentProxyIndex].format;
+      }
+      
+      // Find any proxy that supports the method
+      const compatibleProxies = this.proxies.filter(p => p.methods.includes(method));
+      if (compatibleProxies.length > 0) {
+        this.currentProxyIndex = this.proxies.indexOf(compatibleProxies[0]);
+        return compatibleProxies[0].format;
+      }
+      
+      // If nothing works, just return the current one and hope for the best
+      return this.proxies[this.currentProxyIndex].format;
+    }
+
+    /**
+     * Mark current proxy as failed and move to the next one
+     */
+    markCurrentAsFailed() {
+      const currentTime = Date.now();
+      this.proxies[this.currentProxyIndex].status = 'failed';
+      this.lastTestedTime[this.currentProxyIndex] = currentTime;
+      
+      // Try to find the next untested or working proxy
+      let nextIndex = (this.currentProxyIndex + 1) % this.proxies.length;
+      const startIndex = nextIndex;
+      
+      do {
+        // If proxy is working or untested, use it
+        if (this.proxies[nextIndex].status === 'working' || 
+            this.proxies[nextIndex].status === 'untested') {
+          break;
+        }
+        
+        // If proxy was failed but it's been more than retryDelay, reset it to untested
+        if (this.proxies[nextIndex].status === 'failed' &&
+            currentTime - (this.lastTestedTime[nextIndex] || 0) > this.retryDelay) {
+          this.proxies[nextIndex].status = 'untested';
+          break;
+        }
+        
+        nextIndex = (nextIndex + 1) % this.proxies.length;
+      } while (nextIndex !== startIndex);
+      
+      this.currentProxyIndex = nextIndex;
+    }
+
+    /**
+     * Mark current proxy as working
+     */
+    markCurrentAsWorking() {
+      this.proxies[this.currentProxyIndex].status = 'working';
+    }
+
+    /**
+     * Format a URL using the current best proxy
+     * @param {string} url - The original URL to proxy
+     * @param {string} method - HTTP method (GET, POST, OPTIONS)
+     * @returns {string} The formatted proxy URL
+     */
+    getProxiedUrl(url, method = 'GET') {
+      return this.getCurrentProxy(method)(url);
+    }
+
+    /**
+     * Get a direct URL without any proxy
+     * @param {string} url - The original URL
+     * @returns {string} The unproxied URL
+     */
+    getDirectUrl(url) {
+      return url;
+    }
+  }
+
+  // Update UdioPlayer to use the new CorsProxyManager
+  class UdioPlayer {
     constructor(options = {}) {
       this.apiEndpoint = options.apiEndpoint || 'https://www.udio.com/api/songs/search';
       this.useCorsProxy = options.useCorsProxy !== false;
       this.pageSize = options.pageSize || 20;
+      this.maxRetries = options.maxRetries || 3;
+      
+      // Initialize the CORS proxy manager
+      this.proxyManager = new CorsProxyManager();
       
       this._activeAudio = null;
       this._audioElement = null;
@@ -89,6 +211,60 @@
       this._loopOptions = null;
       this._loopCount = 0;
       this._eventListeners = {};
+    }
+
+    /**
+     * Make an HTTP request with automatic CORS proxy fallback
+     * @param {string} url - The URL to request
+     * @param {Object} options - Fetch options
+     * @param {number} [retryCount=0] - Current retry count
+     * @returns {Promise<Response>} The fetch response
+     * @private
+     */
+    async _fetchWithFallback(url, options, retryCount = 0) {
+      const method = options.method || 'GET';
+      let requestUrl;
+      
+      try {
+        // First try without proxy if proxy is not enforced
+        if (!this.useCorsProxy && retryCount === 0) {
+          requestUrl = url;
+          const response = await fetch(requestUrl, options);
+          if (response.ok) return response;
+        }
+        
+        // Then try with proxy
+        if (this.useCorsProxy || retryCount > 0) {
+          requestUrl = this.proxyManager.getProxiedUrl(url, method);
+          const response = await fetch(requestUrl, options);
+          
+          if (response.ok) {
+            this.proxyManager.markCurrentAsWorking();
+            return response;
+          }
+        }
+        
+        throw new Error(`Request failed: ${requestUrl}`);
+      } catch (error) {
+        console.warn(`CORS proxy request failed (attempt ${retryCount + 1}/${this.maxRetries + 1}):`, error);
+        
+        // If we haven't exceeded max retries, try with next proxy
+        if (retryCount < this.maxRetries) {
+          this.proxyManager.markCurrentAsFailed();
+          return this._fetchWithFallback(url, options, retryCount + 1);
+        }
+        
+        // If all retries failed, try without proxy as last resort
+        if (this.useCorsProxy) {
+          console.warn('All CORS proxies failed, trying direct request as last resort');
+          this.useCorsProxy = false;
+          const response = await fetch(url, options);
+          this.useCorsProxy = true; // Reset for next time
+          return response;
+        }
+        
+        throw error;
+      }
     }
 
     /**
@@ -118,19 +294,13 @@
       });
       
       try {
-        const url = this.useCorsProxy ? `${CORS_PROXY}${encodeURIComponent(this.apiEndpoint)}` : this.apiEndpoint;
-        
-        const response = await fetch(url, {
+        const response = await this._fetchWithFallback(this.apiEndpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: postData
         });
-
-        if (!response.ok) {
-          throw new Error(`API request failed with status ${response.status}`);
-        }
 
         const result = await response.json();
         
@@ -151,27 +321,6 @@
         console.error('Error searching Udio:', error);
         throw error;
       }
-    }
-
-    /**
-     * Get a single track by matching keywords/tags
-     * @param {string|string[]} keywords - Keywords or tags to search for
-     * @param {UdioSearchOptions} [options] - Additional search options
-     * @returns {Promise<UdioTrack|null>} A matching track or null if none found
-     */
-    async getTrack(keywords, options = {}) {
-      const searchOptions = { ...options };
-      
-      if (typeof keywords === 'string') {
-        searchOptions.searchTerm = keywords;
-      } else if (Array.isArray(keywords)) {
-        searchOptions.tags = keywords;
-      }
-      
-      searchOptions.maxResults = 1;
-      
-      const tracks = await this.search(searchOptions);
-      return tracks.length > 0 ? tracks[0] : null;
     }
 
     /**
@@ -208,16 +357,86 @@
       // Set up event listeners
       this._setupEventListeners();
       
+      // Add error handler to try fallback proxies
+      let retryCount = 0;
+      const maxRetries = this.maxRetries;
+      const proxyManager = this.proxyManager;
+      
+      const errorHandler = async (event) => {
+        if (retryCount >= maxRetries) {
+          console.error('Failed to load audio after all retries');
+          return;
+        }
+        
+        retryCount++;
+        console.warn(`Audio loading failed, trying next CORS proxy (attempt ${retryCount}/${maxRetries})`);
+        
+        // Mark the current proxy as failed and move to next
+        proxyManager.markCurrentAsFailed();
+        
+        // Try with new proxy
+        if (this.useCorsProxy) {
+          this._audioElement.src = proxyManager.getProxiedUrl(trackUrl, 'GET');
+        } else {
+          // If not using proxy, try with proxy as fallback
+          this.useCorsProxy = true;
+          this._audioElement.src = proxyManager.getProxiedUrl(trackUrl, 'GET');
+        }
+        
+        try {
+          await this._audioElement.load();
+        } catch (err) {
+          console.error('Error reloading audio with new proxy:', err);
+        }
+      };
+      
+      this._audioElement.addEventListener('error', errorHandler);
+      
+      // Add a canplay handler to mark proxy as working
+      const canPlayHandler = () => {
+        if (this.useCorsProxy) {
+          proxyManager.markCurrentAsWorking();
+        }
+        this._audioElement.removeEventListener('canplay', canPlayHandler);
+      };
+      
+      this._audioElement.addEventListener('canplay', canPlayHandler);
+      
       // Load the track
       try {
-        const url = this.useCorsProxy ? `${CORS_PROXY}${encodeURIComponent(trackUrl)}` : trackUrl;
-        this._audioElement.src = url;
+        if (this.useCorsProxy) {
+          this._audioElement.src = proxyManager.getProxiedUrl(trackUrl, 'GET');
+        } else {
+          this._audioElement.src = trackUrl;
+        }
+        
         await this._audioElement.load();
         return this._audioElement;
       } catch (error) {
         console.error('Error loading track:', error);
         throw error;
       }
+    }
+
+    /**
+     * Get a single track by matching keywords/tags
+     * @param {string|string[]} keywords - Keywords or tags to search for
+     * @param {UdioSearchOptions} [options] - Additional search options
+     * @returns {Promise<UdioTrack|null>} A matching track or null if none found
+     */
+    async getTrack(keywords, options = {}) {
+      const searchOptions = { ...options };
+      
+      if (typeof keywords === 'string') {
+        searchOptions.searchTerm = keywords;
+      } else if (Array.isArray(keywords)) {
+        searchOptions.tags = keywords;
+      }
+      
+      searchOptions.maxResults = 1;
+      
+      const tracks = await this.search(searchOptions);
+      return tracks.length > 0 ? tracks[0] : null;
     }
 
     /**
